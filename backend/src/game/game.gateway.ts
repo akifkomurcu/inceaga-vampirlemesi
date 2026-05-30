@@ -436,7 +436,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (!room) return;
     const player = room.players[client.id];
     if (!player || !player.isAlive) return;
-    if (room.phase !== 'day_discussion') return;
+    if (room.phase !== 'day_discussion' && room.phase !== 'lobby') return;
 
     this.server.to(code).emit('chat-message', {
       playerId: client.id,
