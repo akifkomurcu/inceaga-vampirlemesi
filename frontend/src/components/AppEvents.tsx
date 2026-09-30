@@ -30,8 +30,27 @@ export default function AppEvents() {
       saveLobbySession({ code: room.code, nickname: me.nickname });
     };
 
+    const resetLobbyState = () => {
+      clearLobbySession();
+      setRoom(null);
+      setPlayerId(null);
+      setMyCharacterId(null);
+      setAllies([]);
+      setDetectiveResult(null);
+    };
+
+    const rejoinLobbySession = () => {
+      const session = readLobbySession();
+      if (session) {
+        socket.emit('rejoin-room', session);
+      }
+    };
+
     type Handler = (data: any) => void;
     const handlers: [string, Handler][] = [
+      ['connect', () => {
+        rejoinLobbySession();
+      }],
       ['room-created', ({ room, playerId }: { room: Room; playerId: string }) => {
         persistLobbySession(room, playerId);
         setRoom(room);
@@ -97,6 +116,14 @@ export default function AppEvents() {
         setRoom((prev) => prev ? { ...prev, winner, players, winnerPlayerId: winnerPlayerId || null, phase: 'game_over' } : prev);
         navigate('/game/over');
       }],
+      ['room-left', () => {
+        resetLobbyState();
+        navigate('/');
+      }],
+      ['kicked', () => {
+        resetLobbyState();
+        navigate('/');
+      }],
       ['characters-list', (data: any) => {
         setCharacters(data);
       }],
@@ -113,6 +140,11 @@ export default function AppEvents() {
     ];
 
     handlers.forEach(([event, handler]) => socket.on(event, handler));
+
+    if (socket.connected) {
+      rejoinLobbySession();
+    }
+
     return () => {
       handlers.forEach(([event, handler]) => socket.off(event, handler));
     };

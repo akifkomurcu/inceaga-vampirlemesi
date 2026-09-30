@@ -8,6 +8,8 @@ interface GameShellProps {
   identitySubtitle: string;
   activeNav?: NavKey;
   title?: string;
+  toolbarContent?: ReactNode;
+  footerContent?: ReactNode;
 }
 
 const NAV_ITEMS: { key: NavKey; label: string; icon: string }[] = [
@@ -23,6 +25,8 @@ export default function GameShell({
   identitySubtitle,
   activeNav = 'village',
   title = 'Vampir Köylü',
+  toolbarContent,
+  footerContent,
 }: GameShellProps) {
   return (
     <div className="ritual-shell">
@@ -43,25 +47,19 @@ export default function GameShell({
 
         <nav className="ritual-nav" aria-label="Oyun bölümleri">
           {NAV_ITEMS.map((item) => (
-            <button
+            <div
               key={item.key}
-              type="button"
               className={`ritual-nav-item ${activeNav === item.key ? 'is-active' : ''}`}
             >
               <span className="material-symbols-outlined icon-lined" aria-hidden="true">
                 {item.icon}
               </span>
               <span>{item.label}</span>
-            </button>
+            </div>
           ))}
         </nav>
 
-        <button type="button" className="ritual-support">
-          <span className="material-symbols-outlined icon-lined" aria-hidden="true">
-            contact_support
-          </span>
-          <span>Destek</span>
-        </button>
+        {footerContent ? <div className="ritual-sidebar-footer">{footerContent}</div> : null}
       </aside>
 
       <div className="ritual-main">
@@ -73,15 +71,7 @@ export default function GameShell({
             <h1>{title}</h1>
           </div>
 
-          <div className="ritual-toolbar">
-            {['settings', 'help', 'volume_up'].map((icon) => (
-              <button key={icon} type="button" className="ritual-toolbar-button" aria-label={icon}>
-                <span className="material-symbols-outlined icon-lined" aria-hidden="true">
-                  {icon}
-                </span>
-              </button>
-            ))}
-          </div>
+          {toolbarContent}
         </header>
 
         <main className="ritual-canvas">{children}</main>

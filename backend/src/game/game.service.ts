@@ -113,6 +113,36 @@ export class GameService {
     return room;
   }
 
+  async leaveRoom(
+    code: string,
+    playerId: string,
+  ): Promise<{ room: Room | null } | { error: string }> {
+    const room = await this.roomRepo.findByCode(code);
+    if (!room) return { error: 'Oda bulunamadı.' };
+    if (!room.players[playerId]) return { error: 'Oyuncu bulunamadı.' };
+
+    const updatedRoom = await this.removePlayer(code, playerId);
+    return { room: updatedRoom };
+  }
+
+  async kickPlayer(
+    code: string,
+    hostId: string,
+    targetId: string,
+  ): Promise<{ room: Room | null; kickedPlayer: Player } | { error: string }> {
+    const room = await this.roomRepo.findByCode(code);
+    if (!room) return { error: 'Oda bulunamadı.' };
+    if (room.phase !== 'lobby') return { error: 'Oyuncu atma sadece lobide mümkün.' };
+    if (room.hostId !== hostId) return { error: 'Sadece oda sahibi oyuncu atabilir.' };
+    if (targetId === hostId) return { error: 'Kendini odadan atamazsın.' };
+
+    const kickedPlayer = room.players[targetId];
+    if (!kickedPlayer) return { error: 'Atılacak oyuncu bulunamadı.' };
+
+    const updatedRoom = await this.removePlayer(code, targetId);
+    return { room: updatedRoom, kickedPlayer };
+  }
+
   async rejoinLobbyRoom(
     code: string,
     nextPlayerId: string,

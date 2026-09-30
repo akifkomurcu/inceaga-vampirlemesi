@@ -32,6 +32,14 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     console.log(`Client connected: ${client.id}`);
   }
 
+  private clearLobbyDisconnectTimer(playerId: string) {
+    const pendingRemoval = this.lobbyDisconnectTimers.get(playerId);
+    if (pendingRemoval) {
+      clearTimeout(pendingRemoval);
+      this.lobbyDisconnectTimers.delete(playerId);
+    }
+  }
+
   async handleDisconnect(client: Socket) {
     console.log(`Client disconnected: ${client.id}`);
     const code = socketRoom.get(client.id);
@@ -126,11 +134,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return;
     }
 
-    const pendingRemoval = this.lobbyDisconnectTimers.get(result.previousPlayerId);
-    if (pendingRemoval) {
-      clearTimeout(pendingRemoval);
-      this.lobbyDisconnectTimers.delete(result.previousPlayerId);
-    }
+    this.clearLobbyDisconnectTimer(result.previousPlayerId);
 
     socketRoom.set(client.id, result.room.code);
     client.join(result.room.code);
@@ -141,6 +145,72 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       players: result.room.players,
       hostId: result.room.hostId,
     });
+  }
+
+  @SubscribeMessage('leave-room')
+  async handleLeaveRoom(@ConnectedSocket() client: Socket) {
+    const code = socketRoom.get(client.id);
+    if (!code) {
+      client.emit('room-left', {});
+      return;
+    }
+
+    this.clearLobbyDisconnectTimer(client.id);
+
+    const result = await this.gameService.leaveRoom(code, client.id);
+    if ('error' in result) {
+      client.emit('error', { message: result.error });
+      return;
+    }
+
+    socketRoom.delete(client.id);
+    client.leave(code);
+    client.emit('room-left', { code });
+
+    if (result.room) {
+      this.server.to(code).emit('player-left', {
+        playerId: client.id,
+        players: result.room.players,
+        hostId: result.room.hostId,
+      });
+    }
+  }
+
+  @SubscribeMessage('kick-player')
+  async handleKickPlayer(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { playerId: string },
+  ) {
+    const code = socketRoom.get(client.id);
+    if (!code) return;
+
+    this.clearLobbyDisconnectTimer(data.playerId);
+
+    const result = await this.gameService.kickPlayer(code, client.id, data.playerId);
+    if ('error' in result) {
+      client.emit('error', { message: result.error });
+      return;
+    }
+
+    socketRoom.delete(result.kickedPlayer.id);
+
+    const kickedSocket = this.server.sockets.sockets.get(result.kickedPlayer.id);
+    if (kickedSocket) {
+      kickedSocket.leave(code);
+    }
+
+    this.server.to(result.kickedPlayer.id).emit('kicked', {
+      code,
+      nickname: result.kickedPlayer.nickname,
+    });
+
+    if (result.room) {
+      this.server.to(code).emit('player-left', {
+        playerId: result.kickedPlayer.id,
+        players: result.room.players,
+        hostId: result.room.hostId,
+      });
+    }
   }
 
   // ── Ayarları güncelle ───────────────────────────────────────────────────

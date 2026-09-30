@@ -36,7 +36,7 @@ export default function Home() {
       <ErrorToast message={error} />
       <div className="landing-shell">
         <section className="landing-hero">
-          <p className="landing-kicker">Moonlıght</p>
+          <p className="landing-kicker">BLOOD & MOONLIGHT</p>
           <div className="landing-brand">
             <div className="landing-brand-mark" aria-hidden="true">
               <span className="material-symbols-outlined icon-lined">bedtime</span>

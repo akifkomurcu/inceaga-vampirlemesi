@@ -5,6 +5,7 @@ import { useSocket } from '../contexts/SocketContext';
 import { useError } from '../hooks/useError';
 import ErrorToast from '../components/ErrorToast';
 import GameShell from '../components/GameShell';
+import { clearLobbySession, readLobbySession } from '../utils/lobbySession';
 
 const TEAM_LABELS: Record<string, string> = { good: 'İyi', evil: 'Kötü', neutral: 'Nötr' };
 const TEAM_CLASS: Record<string, string> = { good: 'team-good', evil: 'team-evil', neutral: 'team-neutral' };
@@ -45,45 +46,60 @@ export default function Lobby() {
   const feedEndRef = useRef<HTMLDivElement | null>(null);
   const previousRoomRef = useRef<string | null>(null);
   const previousPlayersRef = useRef<Record<string, string>>({});
+  const savedLobbySession = readLobbySession();
 
-  if (!room) return null;
-
-  const myPlayer = playerId ? room.players[playerId] : null;
-  const isHost = room.hostId === playerId;
+  const myPlayer = room && playerId ? room.players[playerId] : null;
+  const hostPlayer = room ? room.players[room.hostId] ?? null : null;
+  const isHost = room ? room.hostId === playerId : false;
   const players = useMemo(
-    () =>
-      Object.values(room.players).sort((left, right) => {
+    () => {
+      if (!room) return [];
+
+      return Object.values(room.players).sort((left, right) => {
         const leftScore = Number(left.id === playerId) * 2 + Number(left.isHost);
         const rightScore = Number(right.id === playerId) * 2 + Number(right.isHost);
         if (leftScore !== rightScore) return rightScore - leftScore;
         return left.nickname.localeCompare(right.nickname, 'tr');
-      }),
-    [room.players, playerId],
+      });
+    },
+    [room, playerId],
   );
 
   // Karakter havuzu: her karakter id'si kaç kez seçildi
   const charCounts: Record<string, number> = {};
-  room.selectedCharacters.forEach((id) => {
+  room?.selectedCharacters.forEach((id) => {
     charCounts[id] = (charCounts[id] || 0) + 1;
   });
+  const selectedRoleDefs = characters
+    .filter((char) => charCounts[char.id] > 0)
+    .sort((left, right) => {
+      const leftCount = charCounts[left.id] || 0;
+      const rightCount = charCounts[right.id] || 0;
+      if (leftCount !== rightCount) return rightCount - leftCount;
+      return left.name.localeCompare(right.name, 'tr');
+    });
 
-  const totalSelected = room.selectedCharacters.length;
+  const totalSelected = room?.selectedCharacters.length ?? 0;
   const playerCount = players.length;
-  const mismatch = totalSelected !== playerCount;
-  const canStart = !mismatch && playerCount >= 4;
+  const mismatch = room ? totalSelected !== playerCount : false;
+  const canStart = Boolean(room) && !mismatch && playerCount >= 4;
   const vampireCount = charCounts.vampire || 0;
   const maxVampires = Math.max(1, Math.min(6, playerCount || 6));
-  const lobbyStatus = canStart
-    ? 'Hazır'
-    : playerCount < 4
-      ? 'Toplanıyor'
-      : 'Ayar Bekliyor';
+  const lobbyStatus = !room
+    ? 'Geri Yükleniyor'
+    : canStart
+      ? 'Hazır'
+      : playerCount < 4
+        ? 'Toplanıyor'
+        : 'Ayar Bekliyor';
   const lobbyStatusDetail = `${lobbyStatus} (${playerCount}/${PLAYER_CAPACITY})`;
   const visibleSlots = Math.min(Math.max(playerCount + 1, 4), 8);
   const fillerCount = Math.max(0, visibleSlots - playerCount);
   const feedPlaceholder = connected ? 'Fısılda...' : 'Bağlantı bekleniyor...';
 
   useEffect(() => {
+    if (!room) return;
+
     const currentPlayers = Object.fromEntries(
       Object.values(room.players).map((player) => [player.id, player.nickname]),
     );
@@ -137,7 +153,7 @@ export default function Lobby() {
   }, [room, isHost]);
 
   useEffect(() => {
-    if (!socket || room.phase !== 'lobby') return;
+    if (!socket || !room || room.phase !== 'lobby') return;
 
     const onChat = (data: ChatMessagePayload) => {
       setFeed((currentFeed) => [
@@ -157,20 +173,44 @@ export default function Lobby() {
     return () => {
       socket.off('chat-message', onChat);
     };
-  }, [socket, room.phase, playerId]);
+  }, [socket, room, playerId]);
 
   useEffect(() => {
     feedEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [feed]);
 
   const handleCopyCode = () => {
+    if (!room) return;
     navigator.clipboard.writeText(room.code).catch(() => {});
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handleLeaveRoom = () => {
+    if (!socket || !connected) {
+      clearLobbySession();
+      window.location.href = '/';
+      return;
+    }
+
+    socket.emit('leave-room');
+  };
+
+  const handleKickPlayer = (targetId: string, nickname: string) => {
+    if (!isHost || !socket || !connected) {
+      showError('Oyuncu atmak için sunucu bağlantısı gerekli.');
+      return;
+    }
+
+    if (!window.confirm(`${nickname} adlı oyuncu odadan çıkarılsın mı?`)) {
+      return;
+    }
+
+    socket.emit('kick-player', { playerId: targetId });
+  };
+
   const updateChar = (charId: string, delta: number) => {
-    if (!isHost) return;
+    if (!room || !isHost) return;
     const current = charCounts[charId] || 0;
     const next = current + delta;
     if (next < 0) return;
@@ -196,7 +236,7 @@ export default function Lobby() {
     min: number,
     max: number,
   ) => {
-    if (!isHost) return;
+    if (!room || !isHost) return;
 
     const current = room[field];
     const next = clamp(current + delta, min, max);
@@ -205,7 +245,7 @@ export default function Lobby() {
   };
 
   const adjustVampires = (delta: number) => {
-    if (!isHost) return;
+    if (!room || !isHost) return;
 
     const next = vampireCount + delta;
     if (next < 1 || next > maxVampires) return;
@@ -248,11 +288,87 @@ export default function Lobby() {
     setChatInput('');
   };
 
+  if (!room) {
+    return (
+      <GameShell
+        identityName={savedLobbySession?.nickname || 'Oyuncu'}
+        identitySubtitle={connected ? 'Lobi Geri Yükleniyor' : 'Bağlantı Kuruluyor'}
+        activeNav="village"
+        toolbarContent={
+          <div className="ritual-toolbar">
+            <button type="button" className="ritual-toolbar-pill is-danger" onClick={handleLeaveRoom}>
+              <span className="material-symbols-outlined icon-lined" aria-hidden="true">
+                logout
+              </span>
+              <span>Ana Sayfaya Dön</span>
+            </button>
+          </div>
+        }
+      >
+        <ErrorToast message={error} />
+
+        <div className="ritual-grid ritual-grid-single">
+          <section className="ritual-column">
+            <article className="ritual-panel ritual-reconnect-panel">
+              <p className="ritual-label">Lobi Oturumu</p>
+              <h2 className="ritual-room-code">{savedLobbySession?.code || '------'}</h2>
+              <p className="ritual-reconnect-copy">
+                {savedLobbySession
+                  ? `${savedLobbySession.nickname} için lobi geri yükleniyor. Bağlantı tamamlandığında kaldığın yerden devam edeceksin.`
+                  : 'Kayıtlı bir lobi oturumu bulunamadı. Ana sayfaya dönüp yeniden giriş yapman gerekebilir.'}
+              </p>
+
+              <div className="ritual-reconnect-status">
+                <span className={`ritual-chip ${connected ? 'is-ready' : ''}`}>
+                  {connected ? 'Sunucuya Bağlandı' : 'Bağlantı Kuruluyor'}
+                </span>
+                {savedLobbySession?.nickname && (
+                  <span className="ritual-chip subtle">{savedLobbySession.nickname}</span>
+                )}
+              </div>
+
+              <button
+                type="button"
+                className="ritual-start-button"
+                onClick={() => {
+                  window.location.href = '/';
+                }}
+              >
+                Ana Sayfaya Dön
+              </button>
+            </article>
+          </section>
+        </div>
+      </GameShell>
+    );
+  }
+
   return (
     <GameShell
       identityName={myPlayer?.nickname || 'Oyuncu'}
       identitySubtitle={isHost ? 'Oda Sahibi' : connected ? 'Ayin Bekleniyor' : 'Bağlantı Yenileniyor'}
       activeNav="village"
+      toolbarContent={
+        <div className="ritual-toolbar">
+          <button
+            type="button"
+            className="ritual-toolbar-button"
+            onClick={handleCopyCode}
+            aria-label={copied ? 'Oda kodu kopyalandı' : 'Oda kodunu kopyala'}
+          >
+            <span className="material-symbols-outlined icon-lined" aria-hidden="true">
+              {copied ? 'done' : 'content_copy'}
+            </span>
+          </button>
+          <button type="button" className="ritual-toolbar-pill is-danger" onClick={handleLeaveRoom}>
+            <span className="material-symbols-outlined icon-lined" aria-hidden="true">
+              logout
+            </span>
+            <span>Odadan Çık</span>
+          </button>
+        </div>
+      }
+      footerContent={<div className="ritual-sidebar-note">Lobi evresi aktif</div>}
     >
       <ErrorToast message={error} />
 
@@ -276,116 +392,180 @@ export default function Lobby() {
             </div>
           </article>
 
-          <article className="ritual-panel ritual-settings-panel">
-            <div className="ritual-panel-header compact">
-              <h3 className="ritual-panel-title">Oyun Kuralları</h3>
-              <span className={`ritual-chip subtle ${mismatch ? 'is-warning' : ''}`}>
-                {totalSelected}/{playerCount} seçili
-              </span>
-            </div>
+          {isHost ? (
+            <>
+              <article className="ritual-panel ritual-settings-panel">
+                <div className="ritual-panel-header compact">
+                  <h3 className="ritual-panel-title">Oyun Kuralları</h3>
+                  <span className={`ritual-chip subtle ${mismatch ? 'is-warning' : ''}`}>
+                    {totalSelected}/{playerCount} seçili
+                  </span>
+                </div>
 
-            <LobbyControl
-              label="Vampir Sayısı"
-              value={String(vampireCount)}
-              percent={(vampireCount / maxVampires) * 100}
-              disabled={!isHost}
-              onDecrease={() => adjustVampires(-1)}
-              onIncrease={() => adjustVampires(1)}
-            />
-
-            <LobbyControl
-              label="Gündüz Tartışması"
-              value={formatDuration(room.dayDurationSeconds)}
-              percent={((room.dayDurationSeconds - MIN_DAY_SECONDS) / (MAX_DAY_SECONDS - MIN_DAY_SECONDS)) * 100}
-              disabled={!isHost}
-              onDecrease={() => adjustDuration('dayDurationSeconds', -DAY_STEP_SECONDS, MIN_DAY_SECONDS, MAX_DAY_SECONDS)}
-              onIncrease={() => adjustDuration('dayDurationSeconds', DAY_STEP_SECONDS, MIN_DAY_SECONDS, MAX_DAY_SECONDS)}
-            />
-
-            <LobbyControl
-              label="Gece Evresi"
-              value={formatDuration(room.nightDurationSeconds)}
-              percent={((room.nightDurationSeconds - MIN_NIGHT_SECONDS) / (MAX_NIGHT_SECONDS - MIN_NIGHT_SECONDS)) * 100}
-              disabled={!isHost}
-              onDecrease={() => adjustDuration('nightDurationSeconds', -NIGHT_STEP_SECONDS, MIN_NIGHT_SECONDS, MAX_NIGHT_SECONDS)}
-              onIncrease={() => adjustDuration('nightDurationSeconds', NIGHT_STEP_SECONDS, MIN_NIGHT_SECONDS, MAX_NIGHT_SECONDS)}
-            />
-
-            <div className="ritual-divider" />
-
-            <div className="ritual-character-list">
-              {characters.map((char) => (
-                <CharacterPickerRow
-                  key={char.id}
-                  char={char}
-                  count={charCounts[char.id] || 0}
+                <LobbyControl
+                  label="Vampir Sayısı"
+                  value={String(vampireCount)}
+                  percent={(vampireCount / maxVampires) * 100}
                   disabled={!isHost}
-                  onInc={() => updateChar(char.id, 1)}
-                  onDec={() => updateChar(char.id, -1)}
+                  onDecrease={() => adjustVampires(-1)}
+                  onIncrease={() => adjustVampires(1)}
                 />
-              ))}
-            </div>
-          </article>
 
-          <button
-            id="btn-start-game"
-            type="button"
-            className="ritual-start-button"
-            onClick={handleStart}
-            disabled={!isHost || !canStart}
-          >
-            <span className="material-symbols-outlined icon-lined" aria-hidden="true">
-              swords
-            </span>
-            <span>Ayini Başlat</span>
-          </button>
+                <LobbyControl
+                  label="Gündüz Tartışması"
+                  value={formatDuration(room.dayDurationSeconds)}
+                  percent={((room.dayDurationSeconds - MIN_DAY_SECONDS) / (MAX_DAY_SECONDS - MIN_DAY_SECONDS)) * 100}
+                  disabled={!isHost}
+                  onDecrease={() => adjustDuration('dayDurationSeconds', -DAY_STEP_SECONDS, MIN_DAY_SECONDS, MAX_DAY_SECONDS)}
+                  onIncrease={() => adjustDuration('dayDurationSeconds', DAY_STEP_SECONDS, MIN_DAY_SECONDS, MAX_DAY_SECONDS)}
+                />
 
-          <p className={`ritual-start-hint ${canStart ? 'is-ready' : ''}`}>
-            {!isHost
-              ? 'Yalnızca oda sahibi ayini başlatabilir.'
-              : mismatch
-                ? `Karakter sayısını oyuncu sayısıyla eşitle (${playerCount}).`
-                : playerCount < 4
-                  ? 'En az 4 oyuncu gerekli.'
-                  : 'Her şey hazır. Ayin başlayabilir.'}
-          </p>
+                <LobbyControl
+                  label="Gece Evresi"
+                  value={formatDuration(room.nightDurationSeconds)}
+                  percent={((room.nightDurationSeconds - MIN_NIGHT_SECONDS) / (MAX_NIGHT_SECONDS - MIN_NIGHT_SECONDS)) * 100}
+                  disabled={!isHost}
+                  onDecrease={() => adjustDuration('nightDurationSeconds', -NIGHT_STEP_SECONDS, MIN_NIGHT_SECONDS, MAX_NIGHT_SECONDS)}
+                  onIncrease={() => adjustDuration('nightDurationSeconds', NIGHT_STEP_SECONDS, MIN_NIGHT_SECONDS, MAX_NIGHT_SECONDS)}
+                />
+
+                <div className="ritual-divider" />
+
+                <div className="ritual-character-list">
+                  {characters.map((char) => (
+                    <CharacterPickerRow
+                      key={char.id}
+                      char={char}
+                      count={charCounts[char.id] || 0}
+                      disabled={!isHost}
+                      onInc={() => updateChar(char.id, 1)}
+                      onDec={() => updateChar(char.id, -1)}
+                    />
+                  ))}
+                </div>
+              </article>
+
+              <button
+                id="btn-start-game"
+                type="button"
+                className="ritual-start-button"
+                onClick={handleStart}
+                disabled={!isHost || !canStart}
+              >
+                <span className="material-symbols-outlined icon-lined" aria-hidden="true">
+                  swords
+                </span>
+                <span>Ayini Başlat</span>
+              </button>
+
+              <p className={`ritual-start-hint ${canStart ? 'is-ready' : ''}`}>
+                {mismatch
+                  ? `Karakter sayısını oyuncu sayısıyla eşitle (${playerCount}).`
+                  : playerCount < 4
+                    ? 'En az 4 oyuncu gerekli.'
+                    : 'Her şey hazır. Ayin başlayabilir.'}
+              </p>
+            </>
+          ) : (
+            <>
+              <article className="ritual-panel ritual-roster-panel">
+                <div className="ritual-panel-header compact">
+                  <h3 className="ritual-panel-title">Seçili Roller</h3>
+                  <span className="ritual-chip subtle">{selectedRoleDefs.length} tür</span>
+                </div>
+
+                <div className="ritual-selected-role-list">
+                  {selectedRoleDefs.map((char) => (
+                    <SelectedRoleRow
+                      key={char.id}
+                      char={char}
+                      count={charCounts[char.id] || 0}
+                    />
+                  ))}
+                </div>
+              </article>
+
+              <article className="ritual-panel ritual-waiting-panel">
+                <div className="ritual-panel-header compact">
+                  <h3 className="ritual-panel-title">Bekleyiş</h3>
+                  <span className="ritual-chip subtle">{playerCount}/4+</span>
+                </div>
+
+                <p className="ritual-waiting-copy">
+                  {hostPlayer?.nickname || 'Kurucu'} ayini hazırlıyor. Roller dengelenince ve yeterli kişi toplanınca oyun başlayacak.
+                </p>
+
+                <div className="ritual-waiting-stats">
+                  <div className="ritual-waiting-stat">
+                    <span>Kurucu</span>
+                    <strong>{hostPlayer?.nickname || 'Bilinmiyor'}</strong>
+                  </div>
+                  <div className="ritual-waiting-stat">
+                    <span>Eksik Oyuncu</span>
+                    <strong>{Math.max(0, 4 - playerCount)}</strong>
+                  </div>
+                </div>
+              </article>
+            </>
+          )}
         </section>
 
         <section className="ritual-column ritual-column-center">
-          <div className="ritual-section-head">
-            <h2>Köy Sakinleri</h2>
-            <span>Kapasite: {PLAYER_CAPACITY}</span>
-          </div>
+          <article className="ritual-panel ritual-stage-panel">
+            <div className="ritual-section-head">
+              <h2>Köy Sakinleri</h2>
+              <span>Kapasite: {PLAYER_CAPACITY}</span>
+            </div>
 
-          <div className="ritual-player-grid">
-            {players.map((player) => (
-              <article
-                key={player.id}
-                className={`ritual-player-tile ${player.id === playerId ? 'is-self' : ''}`}
-              >
-                <div className="ritual-player-avatar" aria-hidden="true">
-                  {player.nickname.slice(0, 1).toUpperCase()}
-                </div>
-                <h3>{player.nickname}</h3>
-                <div className="ritual-player-tags">
-                  {player.id === playerId && <span className="ritual-chip subtle">Sen</span>}
-                  {player.isHost && <span className="ritual-chip is-host">Kurucu</span>}
-                </div>
-              </article>
-            ))}
+            <p className="ritual-stage-copy">
+              {isHost
+                ? 'Meydan doldukça dengeyi soldan takip et ve ayini doğru anda başlat.'
+                : `${hostPlayer?.nickname || 'Kurucu'} hazırlıkları tamamladığında ayin otomatik olarak rol dağıtımına geçecek.`}
+            </p>
 
-            {Array.from({ length: fillerCount }, (_, index) => (
-              <article
-                key={`placeholder-${index}`}
-                className={`ritual-player-placeholder ${index === 0 ? 'is-invite' : ''}`}
-              >
-                <span className="material-symbols-outlined icon-lined" aria-hidden="true">
-                  {index === 0 ? 'person_add' : 'hourglass_empty'}
-                </span>
-                <span>{index === 0 ? 'Davet Et' : 'Boş Yuva'}</span>
-              </article>
-            ))}
-          </div>
+            <div className="ritual-player-grid">
+              {players.map((player) => (
+                <article
+                  key={player.id}
+                  className={`ritual-player-tile ${player.id === playerId ? 'is-self' : ''}`}
+                >
+                  <div className="ritual-player-avatar" aria-hidden="true">
+                    {player.nickname.slice(0, 1).toUpperCase()}
+                  </div>
+                  <h3>{player.nickname}</h3>
+                  <div className="ritual-player-tags">
+                    {player.id === playerId && <span className="ritual-chip subtle">Sen</span>}
+                    {player.isHost && <span className="ritual-chip is-host">Kurucu</span>}
+                  </div>
+                  {isHost && player.id !== playerId && room.phase === 'lobby' && (
+                    <button
+                      type="button"
+                      className="ritual-player-action"
+                      onClick={() => handleKickPlayer(player.id, player.nickname)}
+                    >
+                      <span className="material-symbols-outlined icon-lined" aria-hidden="true">
+                        person_remove
+                      </span>
+                      <span>Oyuncu At</span>
+                    </button>
+                  )}
+                </article>
+              ))}
+
+              {Array.from({ length: fillerCount }, (_, index) => (
+                <article
+                  key={`placeholder-${index}`}
+                  className={`ritual-player-placeholder ${index === 0 ? 'is-invite' : ''}`}
+                  onClick={index === 0 ? handleCopyCode : undefined}
+                >
+                  <span className="material-symbols-outlined icon-lined" aria-hidden="true">
+                    {index === 0 ? 'person_add' : 'hourglass_empty'}
+                  </span>
+                  <span>{index === 0 ? (copied ? 'Kod Kopyalandı' : 'Davet Et') : 'Boş Yuva'}</span>
+                </article>
+              ))}
+            </div>
+          </article>
         </section>
 
         <section className="ritual-column ritual-column-right">
@@ -515,6 +695,25 @@ function LobbyControl({
             add
           </span>
         </button>
+      </div>
+    </div>
+  );
+}
+
+function SelectedRoleRow({ char, count }: { char: CharacterDef; count: number }) {
+  return (
+    <div className="ritual-selected-role-row">
+      <div className="ritual-selected-role-copy">
+        <span className="ritual-role-icon">{char.icon}</span>
+        <div>
+          <p className="ritual-role-name">{char.name}</p>
+          <p className="ritual-selected-role-subtitle">{TEAM_LABELS[char.team]} tarafı</p>
+        </div>
+      </div>
+
+      <div className="ritual-selected-role-meta">
+        <span className={`char-team ${TEAM_CLASS[char.team]}`}>{TEAM_LABELS[char.team]}</span>
+        <span className="ritual-role-count-badge">x{count}</span>
       </div>
     </div>
   );

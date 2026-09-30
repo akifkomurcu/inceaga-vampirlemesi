@@ -1,7 +1,6 @@
-import { createContext, useContext, useEffect, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { readLobbySession } from '../utils/lobbySession';
 
 interface SocketContextType {
   socket: Socket | null;
@@ -14,34 +13,29 @@ const configuredBackendUrl = import.meta.env.VITE_BACKEND_URL?.trim();
 const BACKEND_URL = configuredBackendUrl || undefined;
 
 export function SocketProvider({ children }: { children: ReactNode }) {
-  const socketRef = useRef<Socket | null>(null);
+  const [socket, setSocket] = useState<Socket | null>(null);
   const [connected, setConnected] = useState(false);
 
   useEffect(() => {
-    const socket = io(BACKEND_URL, {
+    const nextSocket = io(BACKEND_URL, {
       path: '/socket.io',
       transports: ['polling', 'websocket'],
       upgrade: false,
     });
-    socketRef.current = socket;
+    setSocket(nextSocket);
 
-    socket.on('connect', () => {
+    nextSocket.on('connect', () => {
       setConnected(true);
-
-      const session = readLobbySession();
-      if (session) {
-        socket.emit('rejoin-room', session);
-      }
     });
-    socket.on('disconnect', () => setConnected(false));
+    nextSocket.on('disconnect', () => setConnected(false));
 
     return () => {
-      socket.disconnect();
+      nextSocket.disconnect();
     };
   }, []);
 
   return (
-    <SocketContext.Provider value={{ socket: socketRef.current, connected }}>
+    <SocketContext.Provider value={{ socket, connected }}>
       {children}
     </SocketContext.Provider>
   );
